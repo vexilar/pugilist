@@ -37,6 +37,31 @@ public class EnemyControllerInput : MonoBehaviour
     [SerializeField] private float straightWeight = 0.8f;
     [SerializeField] private float leftHookWeight = 0.6f;
 
+    [Header("Animator Override")]
+    [Tooltip("Override controller used for punch and dodge clips. Base controller must have clips named 'punch_back', 'punch_finished', and 'dodge'.")]
+    [SerializeField] private AnimatorOverrideController overrideController;
+
+    [Header("Punch Overrides - Back")]
+    [SerializeField] private AnimationClip jabBack;
+    [SerializeField] private AnimationClip straightBack;
+    [SerializeField] private AnimationClip leftHookBack;
+    [SerializeField] private AnimationClip rightHookBack;
+    [SerializeField] private AnimationClip uppercutBack;
+
+    [Header("Punch Overrides - Finished")]
+    [SerializeField] private AnimationClip jabFinished;
+    [SerializeField] private AnimationClip straightFinished;
+    [SerializeField] private AnimationClip leftHookFinished;
+    [SerializeField] private AnimationClip rightHookFinished;
+    [SerializeField] private AnimationClip uppercutFinished;
+
+    [Header("Dodge Overrides")]
+    [Tooltip("Clips for dodge state override. Order: Duck, Lean, SlipLeft, SlipRight.")]
+    [SerializeField] private AnimationClip leanClip;
+    [SerializeField] private AnimationClip duckClip;
+    [SerializeField] private AnimationClip slipLeftClip;
+    [SerializeField] private AnimationClip slipRightClip;
+
     [Header("Hitboxes")]
     [SerializeField] private Hitbox[] hitboxes;
 
@@ -45,33 +70,39 @@ public class EnemyControllerInput : MonoBehaviour
     private float moveInput;
     private PlayerController playerController;
 
-    // Input actions
+    // Punch type per input action (0=Jab, 1=Straight, 2=LeftHook, 3=RightHook, 4=Uppercut)
+    private Dictionary<InputAction, int> attackActions = new Dictionary<InputAction, int>();
+    // Dodge type per input action (0=Duck, 1=Lean, 2=SlipLeft, 3=SlipRight)
+    private Dictionary<InputAction, int> defensiveActions = new Dictionary<InputAction, int>();
+
     private InputAction moveAction;
-    private Dictionary<InputAction, string> attackActions = new Dictionary<InputAction, string>();
-    private Dictionary<InputAction, string> defensiveActions = new Dictionary<InputAction, string>();
+
+    // Shared: animator flow (like PlayerController — behaviours set IsPunching/IsDefending)
+    private int currentPunchType;
+    private bool wasPunching;
 
     // AI state (only used when disableAI == false)
     private float lastPunchTime;
-    private float attackStartTime;
     private bool isReactingToPlayerAttack;
     private string detectedPlayerAttack;
     private string lastDetectedAttack;
-    private Coroutine defensiveResetCoroutine;
     private Coroutine reactionCoroutine;
     private float idleTimer;
     private Coroutine testModeCoroutine;
 
-    private const float LONG_ATTACK_DURATION = 0.22f;
-    private const float SHORT_ATTACK_DURATION = 0.21f;
     private const float ATTACK_CANCEL_TRANSITION = 0.1f;
 
-    private readonly string[] availableAttacks = { "JabPressed", "StraightPressed", "LeftHookPressed" };
+    // AI: punch types 0, 1, 2 (Jab, Straight, LeftHook)
+    private readonly int[] availablePunchTypes = { 0, 1, 2 };
     private readonly float[] attackWeights = new float[3];
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody>();
         animator = GetComponent<Animator>();
+
+        if (overrideController == null && animator != null && animator.runtimeAnimatorController is AnimatorOverrideController aoc)
+            overrideController = aoc;
 
         attackWeights[0] = jabWeight;
         attackWeights[1] = straightWeight;
@@ -88,40 +119,54 @@ public class EnemyControllerInput : MonoBehaviour
 
         transform.rotation = Quaternion.Euler(0, 180f, 0);
 
-        // Set up input when using Enemy_ prefixed actions
         if (inputActions != null)
         {
-            var enemyMap = inputActions.FindActionMap("Enemy");
+            // Prefer "Enemy" map; fallback to "Player" (Enemy_* actions may live in Player map in shared asset)
+            var enemyMap = inputActions.FindActionMap("Enemy") ?? inputActions.FindActionMap("Player");
             if (enemyMap != null)
             {
                 moveAction = enemyMap.FindAction("Enemy_Move");
 
-                SetupAttackAction(enemyMap, "Enemy_Jab", "JabPressed");
-                SetupAttackAction(enemyMap, "Enemy_Straight", "StraightPressed");
-                SetupAttackAction(enemyMap, "Enemy_LeftHook", "LeftHookPressed");
-                SetupAttackAction(enemyMap, "Enemy_RightHook", "RightHookPressed");
-                SetupAttackAction(enemyMap, "Enemy_Uppercut", "UppercutPressed");
+                SetupAttackAction(enemyMap, "Enemy_Jab", 0);
+                SetupAttackAction(enemyMap, "Enemy_Straight", 1);
+                SetupAttackAction(enemyMap, "Enemy_LeftHook", 2);
+                SetupAttackAction(enemyMap, "Enemy_RightHook", 3);
+                SetupAttackAction(enemyMap, "Enemy_Uppercut", 4);
 
-                SetupDefensiveAction(enemyMap, "Enemy_Duck", "DuckPressed");
-                SetupDefensiveAction(enemyMap, "Enemy_Lean", "LeanPressed");
-                SetupDefensiveAction(enemyMap, "Enemy_SlipLeft", "SlipLeftPressed");
-                SetupDefensiveAction(enemyMap, "Enemy_SlipRight", "SlipRightPressed");
+                SetupDefensiveAction(enemyMap, "Enemy_Duck", 0);
+                SetupDefensiveAction(enemyMap, "Enemy_Lean", 1);
+                SetupDefensiveAction(enemyMap, "Enemy_SlipLeft", 2);
+                SetupDefensiveAction(enemyMap, "Enemy_SlipRight", 3);
+
+                LogInputSetup(enemyMap);
             }
+            else
+                Debug.Log("[EnemyInput] No 'Enemy' or 'Player' action map found in assigned InputActionAsset. Input will not work.");
         }
+        else
+            Debug.Log("[EnemyInput] InputActionAsset is not assigned on EnemyControllerInput. Assign it in the Inspector.");
     }
 
-    private void SetupAttackAction(InputActionMap enemyMap, string actionName, string triggerName)
+    private void LogInputSetup(InputActionMap map)
+    {
+        int attackCount = attackActions.Count;
+        int defCount = defensiveActions.Count;
+        Debug.Log($"[EnemyInput] Input setup: map='{map.name}', attackActions={attackCount}, defensiveActions={defCount}, disableAI={disableAI}. " +
+            (attackCount == 0 ? "No attack actions found — check action names (e.g. Enemy_Jab)." : ""));
+    }
+
+    private void SetupAttackAction(InputActionMap enemyMap, string actionName, int punchType)
     {
         var action = enemyMap?.FindAction(actionName);
         if (action != null)
-            attackActions[action] = triggerName;
+            attackActions[action] = punchType;
     }
 
-    private void SetupDefensiveAction(InputActionMap enemyMap, string actionName, string triggerName)
+    private void SetupDefensiveAction(InputActionMap enemyMap, string actionName, int dodgeType)
     {
         var action = enemyMap?.FindAction(actionName);
         if (action != null)
-            defensiveActions[action] = triggerName;
+            defensiveActions[action] = dodgeType;
     }
 
     private void OnEnable()
@@ -190,17 +235,45 @@ public class EnemyControllerInput : MonoBehaviour
     {
         if (disableAI)
         {
-            // Input-only: stand there, move only from input
             moveInput = 0f;
             if (moveAction != null)
             {
-                // Use Vector2 (stick): .y = forward/back (z). Bind Enemy_Move as Vector2 in Input Actions.
                 Vector2 v = moveAction.ReadValue<Vector2>();
                 moveInput = Mathf.Clamp(v.y, -1f, 1f);
             }
 
             if (animator != null && (animator.GetBool("IsPunching") || animator.GetBool("IsDefending")))
                 moveInput = 0f;
+
+            // Same as PlayerController: when idle and queued attack exists, apply overrides and fire Attack
+            if (animator != null && IsIdling() && animator.GetBool("QueuedAttackExists"))
+            {
+                int queuedAttack = animator.GetInteger("QueuedAttack");
+                Debug.Log($"[EnemyInput] Update: firing queued Attack punchType={queuedAttack} ({GetAttackTypeFromPunchType(queuedAttack)})");
+                if (currentPunchType != queuedAttack)
+                    ApplyPunchOverrides(queuedAttack);
+                currentPunchType = queuedAttack;
+                animator.SetBool("QueuedAttackExists", false);
+                animator.SetInteger("QueuedAttack", 0);
+                animator.SetTrigger("Attack");
+            }
+
+            // Sync hitboxes to IsPunching (set by PunchBehaviour in animator graph)
+            if (animator != null && hitboxes != null)
+            {
+                bool isPunching = animator.GetBool("IsPunching");
+                if (isPunching && !wasPunching)
+                    ActivateHitboxForAttack(GetAttackTypeFromPunchType(currentPunchType));
+                else if (!isPunching && wasPunching)
+                {
+                    foreach (var hitbox in hitboxes)
+                    {
+                        if (hitbox != null)
+                            hitbox.Deactivate();
+                    }
+                }
+                wasPunching = isPunching;
+            }
 
             return;
         }
@@ -215,36 +288,45 @@ public class EnemyControllerInput : MonoBehaviour
         CheckPlayerAttack();
 
         float distanceToPlayer = Vector3.Distance(transform.position, playerTarget.position);
-        bool isPunching = animator.GetBool("IsPunching");
+        bool aiPunching = animator.GetBool("IsPunching");
         bool isDefending = animator.GetBool("IsDefending");
         bool cooldownReady = Time.time >= lastPunchTime + punchCooldown;
 
-        if (!isPunching && !isDefending)
+        if (!aiPunching && !isDefending)
             idleTimer += Time.deltaTime;
         else
             idleTimer = 0f;
 
-        if (isPunching || isDefending)
+        if (aiPunching || isDefending)
             moveInput = 0f;
-
-        bool attackHeldLongEnough = true;
-        if (isPunching && attackStartTime > 0f)
-        {
-            float attackDuration = Time.time - attackStartTime;
-            attackHeldLongEnough = attackDuration >= SHORT_ATTACK_DURATION;
-        }
 
         bool canAttack = distanceToPlayer <= punchRange &&
                          cooldownReady &&
                          !isDefending &&
-                         (!isPunching || attackHeldLongEnough) &&
+                         !aiPunching &&
                          !isReactingToPlayerAttack &&
                          idleTimer > 0.05f;
 
         if (canAttack)
             AttemptAttack();
 
-        if (!isPunching && !isDefending)
+        // Sync hitboxes to IsPunching (set by PunchBehaviour)
+        if (hitboxes != null)
+        {
+            if (aiPunching && !wasPunching)
+                ActivateHitboxForAttack(GetAttackTypeFromPunchType(currentPunchType));
+            else if (!aiPunching && wasPunching)
+            {
+                foreach (var hitbox in hitboxes)
+                {
+                    if (hitbox != null)
+                        hitbox.Deactivate();
+                }
+            }
+            wasPunching = aiPunching;
+        }
+
+        if (!aiPunching && !isDefending)
         {
             float zDistance = playerTarget.position.z - transform.position.z;
             if (distanceToPlayer > punchRange)
@@ -258,47 +340,170 @@ public class EnemyControllerInput : MonoBehaviour
 
     private void OnAttackPerformed(InputAction.CallbackContext context)
     {
-        if (!disableAI || animator == null)
+        Debug.Log($"[EnemyInput] OnAttackPerformed: action={context.action?.name}, disableAI={disableAI}, animator={animator != null}");
+        if (!disableAI)
+        {
+            Debug.Log("[EnemyInput] Ignored: AI is enabled (input only when disableAI=true).");
             return;
-        if (attackActions.TryGetValue(context.action, out string triggerName))
-            DoAttackFromInput(triggerName);
+        }
+        if (animator == null)
+        {
+            Debug.Log("[EnemyInput] Ignored: no Animator.");
+            return;
+        }
+        if (!attackActions.TryGetValue(context.action, out int punchType))
+        {
+            Debug.Log($"[EnemyInput] Ignored: action '{context.action?.name}' not in attackActions map.");
+            return;
+        }
+        string attackName = GetAttackTypeFromPunchType(punchType);
+        Debug.Log($"[EnemyInput] HandleAttack({punchType}) -> {attackName}");
+        HandleAttack(punchType);
     }
 
     private void OnDefensivePerformed(InputAction.CallbackContext context)
     {
         if (!disableAI || animator == null)
             return;
-        if (defensiveActions.TryGetValue(context.action, out string triggerName))
-            DoDefensiveFromInput(triggerName);
+        if (defensiveActions.TryGetValue(context.action, out int dodgeType))
+            HandleDefensive(dodgeType);
     }
 
-    private void DoAttackFromInput(string triggerName)
+    private bool IsHoldComplete()
     {
-        if (animator.GetBool("IsDefending"))
+        AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+        return state.IsTag("hold") && state.normalizedTime >= 1f;
+    }
+
+    private bool IsHolding()
+    {
+        AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+        return state.IsTag("hold");
+    }
+
+    private bool IsIdling()
+    {
+        AnimatorStateInfo state = animator.GetCurrentAnimatorStateInfo(0);
+        return state.IsTag("idle");
+    }
+
+    private void HandleAttack(int punchType)
+    {
+        if (animator == null)
             return;
-        if (animator.GetBool("IsPunching"))
-            CancelCurrentAttack();
 
-        string attackType = GetAttackTypeFromTrigger(triggerName);
-        float duration = triggerName.Contains("Straight") ? LONG_ATTACK_DURATION : SHORT_ATTACK_DURATION;
+        bool isDefending = animator.GetBool("IsDefending");
+        bool isPunching = animator.GetBool("IsPunching");
+        bool canCounter = animator.GetBool("CanCounter");
+        bool isCounterScenario = isDefending && !isPunching && canCounter;
+        if ((isDefending || isPunching) && !isCounterScenario)
+        {
+            Debug.Log($"[EnemyInput] HandleAttack blocked: isDefending={isDefending}, isPunching={isPunching}, canCounter={canCounter}");
+            return;
+        }
 
-        animator.SetBool("IsPunching", true);
-        animator.SetTrigger(triggerName);
-        ActivateHitboxForAttack(attackType);
-        StartCoroutine(HoldAttackForDuration(duration, attackType));
+        bool isHold = IsHolding();
+        bool isHoldComplete = IsHoldComplete();
+
+        if (isHold && !isHoldComplete)
+        {
+            Debug.Log($"[EnemyInput] Queuing attack {punchType} ({GetAttackTypeFromPunchType(punchType)}) until hold complete.");
+            animator.SetBool("QueuedAttackExists", true);
+            animator.SetInteger("QueuedAttack", punchType);
+        }
+        else
+        {
+            if (currentPunchType != punchType)
+                ApplyPunchOverrides(punchType);
+            currentPunchType = punchType;
+            Debug.Log($"[EnemyInput] Firing Attack trigger, punchType={punchType} ({GetAttackTypeFromPunchType(punchType)}), overrideController={overrideController != null}");
+            animator.SetTrigger("Attack");
+        }
     }
 
-    private void DoDefensiveFromInput(string triggerName)
+    private void ApplyPunchOverrides(int punchType)
     {
-        if (animator.GetBool("IsPunching"))
-            CancelCurrentAttack();
+        if (overrideController == null)
+        {
+            Debug.Log($"[EnemyInput] ApplyPunchOverrides skipped: overrideController is null (animator may not have override clips for punch {punchType}).");
+            return;
+        }
 
-        if (defensiveResetCoroutine != null)
-            StopCoroutine(defensiveResetCoroutine);
+        AnimationClip back = GetPunchBackClip(punchType);
+        AnimationClip finished = GetPunchFinishedClip(punchType);
+        if (back != null)
+            overrideController["punch_back"] = back;
+        if (finished != null)
+            overrideController["punch_finished"] = finished;
+        Debug.Log($"[EnemyInput] Applied overrides for punchType={punchType}: back={back != null}, finished={finished != null}");
+    }
 
-        animator.SetBool("IsDefending", true);
-        animator.SetTrigger(triggerName);
-        defensiveResetCoroutine = StartCoroutine(ResetDefensiveAfterDelay(1.1f));
+    private AnimationClip GetPunchBackClip(int punchType)
+    {
+        return punchType switch
+        {
+            0 => jabBack,
+            1 => straightBack,
+            2 => leftHookBack,
+            3 => rightHookBack,
+            4 => uppercutBack,
+            _ => null
+        };
+    }
+
+    private AnimationClip GetPunchFinishedClip(int punchType)
+    {
+        return punchType switch
+        {
+            0 => jabFinished,
+            1 => straightFinished,
+            2 => leftHookFinished,
+            3 => rightHookFinished,
+            4 => uppercutFinished,
+            _ => null
+        };
+    }
+
+    private static string GetAttackTypeFromPunchType(int punchType)
+    {
+        return punchType switch
+        {
+            0 => "Jab",
+            1 => "Straight",
+            2 => "LeftHook",
+            3 => "RightHook",
+            4 => "Uppercut",
+            _ => "Unknown"
+        };
+    }
+
+    private void HandleDefensive(int dodgeType)
+    {
+        if (animator == null)
+            return;
+
+        if (animator.GetBool("IsDefending") || animator.GetBool("IsPunching"))
+            return;
+
+        ApplyDodgeOverride(dodgeType);
+        animator.SetTrigger("DodgePressed");
+    }
+
+    private void ApplyDodgeOverride(int dodgeType)
+    {
+        if (overrideController == null)
+            return;
+
+        AnimationClip clip = dodgeType switch
+        {
+            0 => duckClip,
+            1 => leanClip,
+            2 => slipLeftClip,
+            3 => slipRightClip,
+            _ => null
+        };
+        if (clip != null)
+            overrideController["dodge"] = clip;
     }
 
     private void CheckPlayerAttack()
@@ -341,11 +546,11 @@ public class EnemyControllerInput : MonoBehaviour
         }
 
         if (attackToReactTo == "Jab")
-            PerformDefensiveAction("SlipLeftPressed");
+            PerformDefensiveAction(2); // SlipLeft
         else if (attackToReactTo == "Straight")
-            PerformDefensiveAction("SlipRightPressed");
+            PerformDefensiveAction(3); // SlipRight
         else if (attackToReactTo == "LeftHook" || attackToReactTo == "RightHook")
-            PerformDefensiveAction("LeanPressed");
+            PerformDefensiveAction(1); // Lean
 
         yield return new WaitForSeconds(0.3f);
         isReactingToPlayerAttack = false;
@@ -354,27 +559,14 @@ public class EnemyControllerInput : MonoBehaviour
         reactionCoroutine = null;
     }
 
-    private void PerformDefensiveAction(string triggerName)
+    private void PerformDefensiveAction(int dodgeType)
     {
         if (animator == null)
             return;
         if (animator.GetBool("IsPunching"))
             CancelCurrentAttack();
-        if (defensiveResetCoroutine != null)
-            StopCoroutine(defensiveResetCoroutine);
-
-        animator.SetBool("IsDefending", true);
-        animator.SetTrigger(triggerName);
+        HandleDefensive(dodgeType);
         idleTimer = 0f;
-        defensiveResetCoroutine = StartCoroutine(ResetDefensiveAfterDelay(1.1f));
-    }
-
-    private IEnumerator ResetDefensiveAfterDelay(float delay)
-    {
-        yield return new WaitForSeconds(delay);
-        if (animator != null)
-            animator.SetBool("IsDefending", false);
-        defensiveResetCoroutine = null;
     }
 
     private void AttemptAttack()
@@ -384,15 +576,11 @@ public class EnemyControllerInput : MonoBehaviour
         if (animator.GetBool("IsPunching"))
             CancelCurrentAttack();
 
-        string selectedAttack = SelectWeightedAttack();
-        string attackType = GetAttackTypeFromTrigger(selectedAttack);
-        float attackDuration = selectedAttack.Contains("Straight") ? LONG_ATTACK_DURATION : SHORT_ATTACK_DURATION;
-
-        animator.SetBool("IsPunching", true);
-        attackStartTime = Time.time;
-        animator.SetTrigger(selectedAttack);
-        ActivateHitboxForAttack(attackType);
-        StartCoroutine(HoldAttackForDuration(attackDuration, attackType));
+        int punchType = SelectWeightedPunchType();
+        if (currentPunchType != punchType)
+            ApplyPunchOverrides(punchType);
+        currentPunchType = punchType;
+        animator.SetTrigger("Attack");
         lastPunchTime = Time.time;
         idleTimer = 0f;
     }
@@ -402,8 +590,6 @@ public class EnemyControllerInput : MonoBehaviour
         if (animator == null)
             return;
         animator.SetTrigger("AttackCanceled");
-        animator.SetBool("IsPunching", false);
-        attackStartTime = 0f;
         if (hitboxes != null)
         {
             foreach (var hitbox in hitboxes)
@@ -415,35 +601,6 @@ public class EnemyControllerInput : MonoBehaviour
         float timeSinceLastPunch = Time.time - lastPunchTime;
         if (timeSinceLastPunch < punchCooldown)
             lastPunchTime = Time.time - (punchCooldown - ATTACK_CANCEL_TRANSITION);
-    }
-
-    private IEnumerator HoldAttackForDuration(float duration, string attackType)
-    {
-        yield return new WaitForSeconds(duration);
-        if (hitboxes != null)
-        {
-            foreach (var hitbox in hitboxes)
-            {
-                if (hitbox != null)
-                    hitbox.Deactivate();
-            }
-        }
-        if (animator != null)
-        {
-            animator.SetTrigger("AttackCanceled");
-            animator.SetBool("IsPunching", false);
-            attackStartTime = 0f;
-        }
-    }
-
-    private string GetAttackTypeFromTrigger(string triggerName)
-    {
-        if (triggerName.Contains("Jab")) return "Jab";
-        if (triggerName.Contains("Straight")) return "Straight";
-        if (triggerName.Contains("LeftHook")) return "LeftHook";
-        if (triggerName.Contains("RightHook")) return "RightHook";
-        if (triggerName.Contains("Uppercut")) return "Uppercut";
-        return "Unknown";
     }
 
     private void ActivateHitboxForAttack(string attackType)
@@ -460,20 +617,20 @@ public class EnemyControllerInput : MonoBehaviour
         }
     }
 
-    private string SelectWeightedAttack()
+    private int SelectWeightedPunchType()
     {
         float totalWeight = 0f;
         foreach (float w in attackWeights)
             totalWeight += w;
         float randomValue = Random.Range(0f, totalWeight);
         float currentWeight = 0f;
-        for (int i = 0; i < availableAttacks.Length; i++)
+        for (int i = 0; i < availablePunchTypes.Length; i++)
         {
             currentWeight += attackWeights[i];
             if (randomValue <= currentWeight)
-                return availableAttacks[i];
+                return availablePunchTypes[i];
         }
-        return availableAttacks[0];
+        return availablePunchTypes[0];
     }
 
     private void FixedUpdate()
@@ -503,12 +660,12 @@ public class EnemyControllerInput : MonoBehaviour
 
     private IEnumerator TestModeCycle()
     {
-        string[] attackActionsArr = { "JabPressed", "StraightPressed", "LeftHookPressed" };
-        string[] defensiveActionsArr = { "LeanPressed", "SlipLeftPressed", "SlipRightPressed", "DuckPressed" };
+        int[] attackPunchTypes = { 0, 1, 2 }; // Jab, Straight, LeftHook
+        int[] defensiveDodgeTypes = { 1, 2, 3, 0 }; // Lean, SlipLeft, SlipRight, Duck
 
         while (testMode)
         {
-            foreach (string attackTrigger in attackActionsArr)
+            foreach (int punchType in attackPunchTypes)
             {
                 if (!testMode) break;
                 if (animator == null) continue;
@@ -522,29 +679,14 @@ public class EnemyControllerInput : MonoBehaviour
 
                 if (!animator.GetBool("IsPunching") && !animator.GetBool("IsDefending"))
                 {
-                    string attackType = attackTrigger.Replace("Pressed", "");
-                    animator.SetBool("IsPunching", true);
-                    animator.SetTrigger(attackTrigger);
-                    if (hitboxes != null)
-                    {
-                        foreach (var h in hitboxes)
-                        {
-                            if (h != null) { h.SetAttackType(attackType); h.Activate(); }
-                        }
-                    }
+                    HandleAttack(punchType);
                     yield return null;
-                    yield return new WaitForSeconds(0.3f);
-                    animator.SetTrigger("AttackCanceled");
-                    animator.SetBool("IsPunching", false);
-                    if (hitboxes != null)
-                    {
-                        foreach (var h in hitboxes) { if (h != null) h.Deactivate(); }
-                    }
+                    yield return new WaitForSeconds(0.5f);
                     yield return new WaitForSeconds(0.2f);
                 }
             }
 
-            foreach (string defensiveTrigger in defensiveActionsArr)
+            foreach (int dodgeType in defensiveDodgeTypes)
             {
                 if (!testMode) break;
                 if (animator == null) continue;
@@ -558,11 +700,9 @@ public class EnemyControllerInput : MonoBehaviour
 
                 if (!animator.GetBool("IsPunching") && !animator.GetBool("IsDefending"))
                 {
-                    animator.SetBool("IsDefending", true);
-                    animator.SetTrigger(defensiveTrigger);
+                    HandleDefensive(dodgeType);
                     yield return null;
                     yield return new WaitForSeconds(1.1f);
-                    animator.SetBool("IsDefending", false);
                     yield return new WaitForSeconds(0.2f);
                 }
             }

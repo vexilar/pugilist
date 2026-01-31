@@ -946,7 +946,7 @@ PrefabInstance:
     - target: {fileID: 5866666021909216657, guid: 925a5a31fced114408ce732f8c1f4da5, type: 3}
       propertyPath: m_Controller
       value: 
-      objectReference: {fileID: 9100000, guid: 9abf9983fca475c42816aadff139e89f, type: 2}
+      objectReference: {fileID: 22100000, guid: b33b2d19a2a06d643a124e8a9f595bc0, type: 2}
     - target: {fileID: 6065535933285862330, guid: 925a5a31fced114408ce732f8c1f4da5, type: 3}
       propertyPath: m_Layer
       value: 7
@@ -1097,8 +1097,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::EnemyControllerInput
   disableAI: 1
-  inputActions: {fileID: 0}
-  playerTarget: {fileID: 0}
+  inputActions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
+  playerTarget: {fileID: 518578296}
   moveSpeed: 5
   acceleration: 10
   deceleration: 10
@@ -1110,7 +1110,27 @@ MonoBehaviour:
   jabWeight: 1
   straightWeight: 0.8
   leftHookWeight: 0.6
+  overrideController: {fileID: 22100000, guid: b33b2d19a2a06d643a124e8a9f595bc0, type: 2}
+  jabBack: {fileID: -5585058633556658623, guid: 2ea92b1c506b07a4b910890f2b6c4c20, type: 3}
+  straightBack: {fileID: 279848377409075687, guid: 1ca58fdcc28fc9f428b62ab036522d37, type: 3}
+  leftHookBack: {fileID: 6239418857713097327, guid: 2f35173530781e04d9508877068eddf3, type: 3}
+  rightHookBack: {fileID: 0}
+  uppercutBack: {fileID: -2500419527953165431, guid: 6b71b56c3fe7f22409ddaf4f8ee91b22, type: 3}
+  jabFinished: {fileID: -706104862919586966, guid: 2ea92b1c506b07a4b910890f2b6c4c20, type: 3}
+  straightFinished: {fileID: 3758729774249215802, guid: 1ca58fdcc28fc9f428b62ab036522d37, type: 3}
+  leftHookFinished: {fileID: 2849987150688228518, guid: 2f35173530781e04d9508877068eddf3, type: 3}
+  rightHookFinished: {fileID: 0}
+  uppercutFinished: {fileID: -177128517367411061, guid: 6b71b56c3fe7f22409ddaf4f8ee91b22, type: 3}
+  leanClip: {fileID: 7424117937160328874, guid: b16e0c0d6ee30d14e884d86f3b1c5f7b, type: 3}
+  duckClip: {fileID: 5050253755763549801, guid: 96fb95ff7856c5c478aa1a565b43d6d1, type: 3}
+  slipLeftClip: {fileID: 9111491510349189226, guid: a8ab23402baf52c4d857fa25f9ca3c14, type: 3}
+  slipRightClip: {fileID: -6647234913476090309, guid: 1c290132e09645f4eb17d127e743f736, type: 3}
   hitboxes: []
+--- !u!4 &518578296 stripped
+Transform:
+  m_CorrespondingSourceObject: {fileID: -8679921383154817045, guid: 925a5a31fced114408ce732f8c1f4da5, type: 3}
+  m_PrefabInstance: {fileID: 518578284}
+  m_PrefabAsset: {fileID: 0}
 --- !u!4 &521557193 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: -2544330636973523609, guid: 925a5a31fced114408ce732f8c1f4da5, type: 3}
