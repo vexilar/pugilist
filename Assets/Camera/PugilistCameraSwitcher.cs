@@ -8,6 +8,8 @@ public class PugilistCameraSwitcher : MonoBehaviour
     [Tooltip("Assign the InputSystem_Actions asset (or any asset with Player/SwitchCam1, SwitchCam2, SwitchCam3).")]
     [SerializeField] private InputActionAsset inputActions;
 
+    [SerializeField] private PunchSelectUI punchUI;
+
     [Header("Assign your CinemachineCameras")]
     public CinemachineCamera Cam1;
     public CinemachineCamera Cam2;
@@ -37,6 +39,7 @@ public class PugilistCameraSwitcher : MonoBehaviour
         _switchCam1?.Enable();
         _switchCam2?.Enable();
         _switchCam3?.Enable();
+        punchUI.OnPunchConfirmed += OnPunchConfirmed; // sub
     }
 
     void OnDisable()
@@ -44,6 +47,12 @@ public class PugilistCameraSwitcher : MonoBehaviour
         _switchCam1?.Disable();
         _switchCam2?.Disable();
         _switchCam3?.Disable();
+        punchUI.OnPunchConfirmed -= OnPunchConfirmed;  // unsub
+    }
+
+    void OnPunchConfirmed(string punchId)
+    {
+        Debug.Log($"Confirmed punch: {punchId}");
     }
 
     void Start()
@@ -69,17 +78,20 @@ public class PugilistCameraSwitcher : MonoBehaviour
     {
         SetAllInactive();
         if (Cam1 != null) Cam1.Priority = activePriority;
+        if (punchUI != null) punchUI.Close();
     }
 
     public void ActivateCam2()
     {
         SetAllInactive();
         if (Cam2 != null) Cam2.Priority = activePriority;
+        if (punchUI != null) punchUI.Open();
     }
 
     public void ActivateCam3()
     {
         SetAllInactive();
         if (Cam3 != null) Cam3.Priority = activePriority;
+        if (punchUI != null) punchUI.Close();
     }
 }
